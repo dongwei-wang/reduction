@@ -2,6 +2,8 @@
 #include "reduction_kernel.cu"
 
 #define UPPER_BOUND 1000
+#define ELEMENTS_PER_BLOCK 2048
+#define BLOCK_SIZE 1024
 
 void runTest();
 int* arrayInit(int len);
@@ -15,13 +17,14 @@ int main(){
 
 void runTest(){
 	printf("Please input the number of elements in the array: \n");
-	int num_elements=512;
-	/* if( scanf("%d", &num_elements) != 1){ */
-	/*     printf("Input Failed\n"); */
-	/*     return; */
-	/* } */
+	int num_elements;
+	if( scanf("%d", &num_elements) != 1){
+		printf("Input Failed\n");
+		return;
+	}
 
 	int* h_data = arrayInit(num_elements);
+
 
 	int reference = computeGold(h_data, num_elements);
 	int result = computeOnDevice(h_data, num_elements);
@@ -34,18 +37,26 @@ void runTest(){
 int* arrayInit(int len){
 	int* data = (int*) malloc( sizeof( int ) * len );
 	for( int i=0; i<len; i++ ){
-		data[i] = rand()%UPPER_BOUND;
-		//data[i] = i;
+		//data[i] = rand()%UPPER_BOUND;
+		data[i] = 1;
 	}
 	return data;
 }
 
-int computeOnDevice(int* h_data, int num_elements){
+int computeOnDevice(int* h_data, int len){
 	int* d_data = NULL;
-	cudaMalloc((void**)&d_data, num_elements * sizeof(int));
-	cudaMemcpy(d_data, h_data, num_elements * sizeof(int), cudaMemcpyHostToDevice);
-	reduction1<<<1, num_elements/2>>>(d_data, num_elements);
-	cudaMemcpy(h_data, d_data, num_elements * sizeof(int), cudaMemcpyDeviceToHost);
+	int depth = ceil(log2((double)len));
+	int block_cnt = (pow(2, depth-1)+BLOCK_SIZE-1)/BLOCK_SIZE;
+
+	//int block_cnt = (len+1)/(2*BLOCK_SIZE);
+	printf("The length is %d\n", len);
+	printf("The depth  is %d\n", depth);
+	printf("The block  is %d\n", block_cnt );
+
+	cudaMalloc((void**)&d_data, len * sizeof(int));
+	cudaMemcpy(d_data, h_data, len * sizeof(int), cudaMemcpyHostToDevice);
+	reduction1<<<block_cnt, BLOCK_SIZE>>>(d_data, depth, len);
+	cudaMemcpy(h_data, d_data, len * sizeof(int), cudaMemcpyDeviceToHost);
 	cudaFree(d_data);
 	return h_data[0];
 }
