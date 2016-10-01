@@ -25,7 +25,7 @@ NVCCFLAGS 			:= -Xptxas="-v" -O3 \
 					# -gencode arch=compute_52,code=sm_52
 
 # macro for files
-CPP_SOURCES       	:= %(wildcard *.cpp)
+CPP_SOURCES       	:= $(wildcard *.cpp)
 CU_SOURCES        	:= reduction.cu
 HEADERS           	:= $(wildcard *.h)
 CPP_OBJS          	:= $(patsubst %.cpp, %.o, $(CPP_SOURCES))
@@ -36,9 +36,22 @@ all: $(BIN)
 $(BIN): $(CU_OBJS)
 	$(CXX) $(CXXFLAGS) -o $(BIN) $(CU_OBJS) $(LIBS)
 
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) -o $@ -c $<
+
+
 $(CU_OBJS): $(CU_SOURCES)
 	$(NVCC) $(NVCCFLAGS) -o $(CU_OBJS) -c $(CU_SOURCES)
 
 # clean unnecessary files
 clean:
 	rm -f $(BIN) *.o tags
+
+cppecho:
+	echo "$(CPP_SOURCES)"
+
+headerecho:
+	echo "$(HEADERS)"
+
+cuecho:
+	echo "$(CU_SOURCES)"
