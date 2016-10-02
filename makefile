@@ -7,7 +7,6 @@ BIN         		:= reduction_cuda
 # CUDA toolkit path
 CUDA_INSTALL_PATH 	:= /usr/local/cuda-7.5
 
-
 NVCC 				:= $(CUDA_INSTALL_PATH)/bin/nvcc
 
 # include path
