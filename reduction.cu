@@ -24,6 +24,7 @@ version: 1.0
 #define BLOCK_SIZE 256
 
 // This is the kernel function employs global memory
+// Probably this approach can not work at GPU, especially when the size of array is too large!!!
 __global__ void reduction_global_memory(int *data, unsigned len){
 	unsigned tid = (blockDim.x * blockIdx.x) + threadIdx.x ;
 	for( unsigned int step = len/2; step > 0; step>>=1 ){
@@ -57,15 +58,17 @@ __global__ void reduction_sm_idle_threads(int* in_array, int* out_array ){
 
 __global__ void reduction_sm_no_idle_threads(int* in_array, int* out_array ){
 
-	unsigned int index = blockDim.x * blockIdx.x + threadIdx.x;
+	//unsigned int index = blockDim.x * blockIdx.x + threadIdx.x;
 	unsigned int tid = threadIdx.x;
-	__shared__ int s_mem[BLOCK_SIZE];
+	unsigned int start_idx = 2*blockIdx.x *blockDim.x;
+	__shared__ int s_mem[BLOCK_SIZE<<1];
 
-	s_mem[tid] = in_array[index];
+	s_mem[tid] = in_array[start_idx+tid];
+	s_mem[tid+BLOCK_SIZE] = in_array[start_idx+BLOCK_SIZE+tid];
 
 	__syncthreads();
 
-	for(unsigned step = blockDim.x/2; step>0; step>>=1){
+	for(unsigned step = blockDim.x; step>0; step>>=1){
 		if(tid < step )
 			s_mem[tid] += s_mem[tid+step];
 		__syncthreads();
@@ -73,6 +76,22 @@ __global__ void reduction_sm_no_idle_threads(int* in_array, int* out_array ){
 
 	if(tid==0)
 		out_array[blockIdx.x] = s_mem[0];
+}
+
+
+/* Function to check if x is power of 2*/
+int isPowerOfTwo(int n)
+{
+	if (n == 0)
+		return 0;
+
+	while (n != 1)
+	{
+		if (n%2 != 0)
+			return 0;
+		n = n/2;
+	}
+	return 1;
 }
 
 
@@ -98,33 +117,29 @@ int* arrayZero(unsigned int len){
 
 // compute in CPU
 int computeGold( int* data, int len){
+	// start to time
+	cudaEvent_t start, stop;
+	cudaEventCreate(&start);
+	cudaEventCreate(&stop);
+	float milliseconds = 0;
+	cudaEventRecord(start);
+
 	int total_sum = 0;
 	for( int i = 0; i < len; ++i){
 		total_sum += data[i];
 	}
+
+	// stop to time
+	cudaEventRecord(stop);
+	cudaEventSynchronize(stop);
+	cudaEventElapsedTime(&milliseconds, start, stop);
+	printf("CPU time to array reduction %f ms\n", milliseconds);
+
 	return total_sum;
 }
 
-// compute in GPU with global memory
-int computeOnDevice_global_memory(int* h_data, int len){
-	int* d_data = NULL;
-	unsigned block_cnt = ((len>>1) + BLOCK_SIZE - 1)/BLOCK_SIZE;
-
-	printf("The length is %d\n", len);
-	printf("The block  is %d\n", block_cnt );
-
-	dim3 gridDim(block_cnt, 1);
-	dim3 blockDim(BLOCK_SIZE, 1);
-
-	cudaMalloc((void**)&d_data, len * sizeof(int));
-	cudaMemcpy(d_data, h_data, len * sizeof(int), cudaMemcpyHostToDevice);
-	reduction_global_memory<<<gridDim, blockDim>>>(d_data, len);
-	cudaMemcpy(h_data, d_data, len * sizeof(int), cudaMemcpyDeviceToHost);
-	cudaFree(d_data);
-	return h_data[0];
-}
-
 // compute in GPU with shared memory
+// This approach will assign threads which is same to the number of elements
 int computeOnDevice_sm_idle_threads(int* h_data, int len){
 	// declare two device memory
 	int* d_data = NULL;
@@ -136,8 +151,8 @@ int computeOnDevice_sm_idle_threads(int* h_data, int len){
 	// initialize a host device
 	int* out_data = arrayZero(block_cnt);
 
-	printf("The length is %d\n", len);
-	printf("The block  is %d\n", block_cnt );
+	printf("The array size  %d\n", len);
+	printf("The block count  %d\n", block_cnt );
 
 	// initizlize the kernel dimension
 	dim3 gridDim(block_cnt, 1);
@@ -153,8 +168,23 @@ int computeOnDevice_sm_idle_threads(int* h_data, int len){
 	// assign a initial value for output data
 	cudaMemset(d_out_data,0, block_cnt*sizeof(int));
 
+	// start to time
+	cudaEvent_t start, stop;
+	cudaEventCreate(&start);
+	cudaEventCreate(&stop);
+	float milliseconds = 0;
+	cudaEventRecord(start);
+
 	// launch the kernel
 	reduction_sm_idle_threads<<<gridDim, blockDim>>>(d_data, d_out_data);
+
+
+	// stop to time
+	cudaEventRecord(stop);
+	cudaEventSynchronize(stop);
+	cudaEventElapsedTime(&milliseconds, start, stop);
+	printf("GPU time to array reduction is %f ms\n", milliseconds);
+
 	cudaMemcpy(out_data, d_out_data, block_cnt*sizeof(int), cudaMemcpyDeviceToHost);
 
 	// sum all the first elements of output data
@@ -166,19 +196,20 @@ int computeOnDevice_sm_idle_threads(int* h_data, int len){
 }
 
 // compute in GPU with shared memory
+// this approach will assign thread which is half to the number of elements
 int computeOnDevice_sm_no_idle_threads(int* h_data, int len){
 	// declare two device memory
 	int* d_data = NULL;
 	int* d_out_data = NULL;
 
 	// calculate the number of blocks
-	unsigned int block_cnt = (len + BLOCK_SIZE - 1)/ (BLOCK_SIZE<<1);
+	unsigned int block_cnt = ((len>>1) + BLOCK_SIZE - 1)/BLOCK_SIZE;
 
 	// initialize a host device
 	int* out_data = arrayZero(block_cnt);
 
-	printf("The length is %d\n", len);
-	printf("The block  is %d\n", block_cnt );
+	printf("The array size is %d\n", len);
+	printf("The block count is %d\n", block_cnt );
 
 	// initizlize the kernel dimension
 	dim3 gridDim(block_cnt, 1);
@@ -194,8 +225,22 @@ int computeOnDevice_sm_no_idle_threads(int* h_data, int len){
 	// assign a initial value for output data
 	cudaMemset(d_out_data,0, block_cnt*sizeof(int));
 
+	// start to time
+	cudaEvent_t start, stop;
+	cudaEventCreate(&start);
+	cudaEventCreate(&stop);
+	float milliseconds = 0;
+	cudaEventRecord(start);
+
 	// launch the kernel
 	reduction_sm_no_idle_threads<<<gridDim, blockDim>>>(d_data, d_out_data);
+
+	// stop to time
+	cudaEventRecord(stop);
+	cudaEventSynchronize(stop);
+	cudaEventElapsedTime(&milliseconds, start, stop);
+	printf("GPU time to array reduction %f ms\n", milliseconds);
+
 	cudaMemcpy(out_data, d_out_data, block_cnt*sizeof(int), cudaMemcpyDeviceToHost);
 
 	// sum all the first elements of output data
@@ -206,40 +251,38 @@ int computeOnDevice_sm_no_idle_threads(int* h_data, int len){
 	return reference;
 }
 
-
-
-
-
 void runTest(){
-	printf("Please input the number of elements in the array: \n");
-	unsigned num_elements;
-	if( scanf("%d", &num_elements) != 1){
-		printf("Input Failed\n");
-		return;
-	}
+	unsigned num_elements = 4194304;
+	/* if( scanf("%d", &num_elements) != 1){ */
+	/*     printf("Input Failed\n"); */
+	/*     return; */
+	/* } */
+
+	/* if( isPowerOfTwo(num_elements)==0 ) */
+	/* { */
+	/*     printf("The input should be power of 2!!!\n"); */
+	/*     return;  */
+	/* } */
 
 	int* h_data = arrayInit(num_elements);
+
+	printf("\n***** CPU processing ..... *****\n");
 	int reference = computeGold(h_data, num_elements);
-	/* int result_global_memory = computeOnDevice_global_memory(h_data, num_elements); */
-	/* printf( "Global memory test %s !!!\n", (reference == result_global_memory) ? "PASSED" : "FAILED"); */
-	/* printf( "Device: %d  Host: %d\n", result_global_memory, reference); */
 
-	cudaEvent_t start, stop;
-	cudaEventCreate(&start);
-	cudaEventCreate(&stop);
-	float milliseconds = 0;
-	cudaEventRecord(start);
+	printf("\n***** GPU kernel 1 processing ..... *****\n");
+	printf("///// This approach assign threads which is the same number to array size /////\n");
+	int result_sm_idle_threads = computeOnDevice_sm_idle_threads(h_data, num_elements);
+	printf( "Shared memory test %s !!!\n", (reference == result_sm_idle_threads) ? "PASSED" : "FAILED");
+	printf( "Device: %d  Host: %d\n", result_sm_idle_threads, reference);
 
-	int result_shared_memory = computeOnDevice_sm_idle_threads(h_data, num_elements);
+	cudaDeviceSynchronize();
 
-	cudaEventRecord(stop);
-	cudaEventSynchronize(stop);
-	cudaEventElapsedTime(&milliseconds, start, stop);
-	printf("GPU time to multiple matrixes %f ms\n", milliseconds);
+	printf("\n***** GPU kernel 2 processing ..... *****\n");
+	printf("///// This approach assign threads which is half of array size /////\n");
+	int result_sm_no_idle_threads = computeOnDevice_sm_no_idle_threads(h_data, num_elements);
+	printf( "Shared memory test %s !!!\n", (reference == result_sm_no_idle_threads) ? "PASSED" : "FAILED");
+	printf( "Device: %d  Host: %d\n", result_sm_no_idle_threads, reference);
 
-
-	printf( "Shared memory test %s !!!\n", (reference == result_shared_memory) ? "PASSED" : "FAILED");
-	printf( "Device: %d  Host: %d\n", result_shared_memory, reference);
 	free(h_data);
 	return;
 }
